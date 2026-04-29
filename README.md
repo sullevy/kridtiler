@@ -1,5 +1,7 @@
 # kridtiler
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 > **Popup grid-tiling for KDE Plasma 6 / Wayland — like [gTile] or [Divvy], but native to KWin.**
 
 [gTile]: https://github.com/gTile/gTile
@@ -212,3 +214,9 @@ kridtiler/
 ## Keywords
 
 KDE, KDE Plasma 6, KWin, Wayland, window tiling, window manager, gTile alternative, Divvy alternative, grid tiling, popup tiler, keyboard shortcuts, Rust CLI.
+
+## License
+
+Licensed under the **GNU General Public License v3.0 or later** (GPL-3.0-or-later) — see [LICENSE](LICENSE) for the full text.
+
+In short: you are free to use, study, modify, and redistribute this software, but any distributed derivative work must also be released under GPL-3.0-or-later (i.e. remain open source).

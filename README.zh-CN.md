@@ -1,5 +1,7 @@
 # kridtiler
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 > English: [README.md](README.md)
 
 KDE Plasma 6 / Wayland 窗口平铺 CLI。基于 KWin Scripting D-Bus 接口,无需常驻守护进程,单次调用端到端 14–22 ms。
@@ -204,4 +206,10 @@ kridtiler/
 ├── config.example.toml
 └── README.md
 ```
+
+## 许可证
+
+本项目以 **GNU General Public License v3.0 or later**（GPL-3.0-or-later）开源 — 完整条款见 [LICENSE](LICENSE)。
+
+简而言之：你可以自由使用、研究、修改、再分发本软件,但若分发派生作品,派生作品必须同样以 GPL-3.0-or-later 开源。
 
