@@ -12,6 +12,8 @@
 # 本地文档
 PRD.txt
 KWin scripting API*.md
+CLAUDE.md
+.claude/
 
 .DS_Store
 *.bak
