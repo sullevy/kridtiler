@@ -1,0 +1,99 @@
+// kridtiler tile script — parameters substituted by the CLI before loadScript.
+// All __PLACEHOLDER__ tokens are replaced with literal numbers. Keep the
+// substitution surface small and explicit so the JS stays readable.
+
+(function () {
+    const COLS = __COLS__;
+    const ROWS = __ROWS__;
+    const X1 = __X1__;
+    const Y1 = __Y1__;
+    const X2 = __X2__;
+    const Y2 = __Y2__;
+    const REQ_ID = "__REQ_ID__";
+
+    function report(status, payload) {
+        // Best-effort callback — if the CLI service isn't up we just swallow it.
+        try {
+            callDBus(
+                "org.kridtile.Control",
+                "/org/kridtile/Control",
+                "org.kridtile.Control",
+                "TileResult",
+                REQ_ID,
+                status,
+                JSON.stringify(payload || {})
+            );
+        } catch (e) { /* ignore */ }
+        print("[kridtiler] " + REQ_ID + " " + status + " " + JSON.stringify(payload || {}));
+    }
+
+    const w = workspace.activeWindow;
+    if (!w) { report("no_active_window", {}); return; }
+
+    const before = {
+        x: w.frameGeometry.x, y: w.frameGeometry.y,
+        width: w.frameGeometry.width, height: w.frameGeometry.height,
+        fullScreen: w.fullScreen,
+        caption: w.caption,
+        resourceClass: w.resourceClass
+    };
+
+    if (w.fullScreen) w.fullScreen = false;
+    // KWin's quick-tile state silently rejects frameGeometry writes — clear it.
+    try { if (w.tile) w.tile = null; } catch (e) {}
+
+    const area = workspace.clientArea(KWin.MaximizeArea, w.output, workspace.currentDesktop);
+
+    // If the window appears to fill MaximizeArea (true KWin maximize OR user-stretched),
+    // un-maximize via the workspace slot so frameGeometry writes land. The slot
+    // triggers KWin's restore animation (which can leave cross-monitor stale
+    // paint), but we follow up with a full-virtual-screen damage refresh to
+    // clean that up.
+    const fg0 = w.frameGeometry;
+    const wasMaxLike = (fg0.x === area.x && fg0.y === area.y &&
+                        fg0.width === area.width && fg0.height === area.height);
+    if (wasMaxLike) {
+        try { workspace.slotWindowMaximize(); } catch (e) {}
+    }
+
+    const cellW = area.width / COLS;
+    const cellH = area.height / ROWS;
+
+    // Inclusive grid rect: (X1,Y1)..(X2,Y2) covers (X2-X1+1) x (Y2-Y1+1) cells.
+    const target = {
+        x: Math.round(area.x + X1 * cellW),
+        y: Math.round(area.y + Y1 * cellH),
+        width: Math.round((X2 - X1 + 1) * cellW),
+        height: Math.round((Y2 - Y1 + 1) * cellH)
+    };
+
+    const oldFrame = {
+        x: w.frameGeometry.x, y: w.frameGeometry.y,
+        width: w.frameGeometry.width, height: w.frameGeometry.height
+    };
+    w.frameGeometry = target;
+    // Buffer-ghost workaround: when frameGeometry is changed via script and the
+    // new size is smaller, KWin sometimes leaves the old bufferGeometry painted
+    // (above/below the new window). Two-step damage refresh:
+    //   1. showOutline on the old frame  → damages the same-monitor ghost
+    //   2. showOutline on virtualScreenGeometry → damages all monitors,
+    //      cleans up cross-output residue from slotWindowMaximize animation
+    try {
+        workspace.showOutline(oldFrame);
+        workspace.showOutline(workspace.virtualScreenGeometry);
+        workspace.hideOutline();
+    } catch (e) {}
+    const after = w.frameGeometry;
+
+    const result = {
+        target: target,
+        before: before,
+        after: { x: after.x, y: after.y, width: after.width, height: after.height },
+        area: { x: area.x, y: area.y, width: area.width, height: area.height },
+        output: w.output ? w.output.name : null,
+        rejected: (after.x !== target.x || after.y !== target.y ||
+                   after.width !== target.width || after.height !== target.height)
+    };
+
+    report(result.rejected ? "partial" : "ok", result);
+})();

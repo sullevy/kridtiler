@@ -1,0 +1,53 @@
+# kridtiler example config — copy to ~/.config/kridtiler/config.toml
+# All sections are optional; missing fields fall back to built-in defaults.
+
+[general]
+# log_level = "info"        # info | debug | warn | error
+# default_cols = 12          # used by `--tile` when no --cols passed
+# default_rows = 1
+
+[overlay]
+# Full-screen --overlay default grid. Override per-call: `kridtiler --overlay 16 12`
+cols = 12
+rows = 8
+
+[popup]
+# Small --show / --popup default grid.
+cols = 8
+rows = 6
+# "center" (default) — popup anchored to active monitor center
+# "cursor"           — popup follows the mouse cursor
+anchor = "center"
+# Whether the popup grabs keyboard focus. Default false — taking focus
+# breaks fcitx5/IBus text-input on GTK/Qt apps (typing into the captured
+# window after dismiss fails). Set true ONLY if you don't use IME and want
+# Esc/Enter shortcuts to work. Right-click and click-outside always dismiss.
+grab_focus = false
+
+[appearance]
+background_color  = "#1e1e2e"
+background_opacity = 0.92
+cell_color        = "#2a2a3a"
+selection_color   = "#3a7ab0"   # range fill while dragging
+anchor_color      = "#4d9de0"   # primary accent (anchor cell, hover)
+border_color      = "#4a4a6a"
+popup_width       = 320          # px (used when popup_width_pct is unset/0)
+popup_width_pct   = 0.30         # 30% of active screen width — wins over popup_width
+
+# User-defined presets — invoked positionally: `kridtiler work-left`
+# rect is [x1, y1, x2, y2] inclusive on a cols × rows grid.
+
+[presets.work-left]
+cols = 12
+rows = 1
+rect = [0, 0, 7, 0]              # left 8/12 of the screen (≈ 67%)
+
+[presets.work-right]
+cols = 12
+rows = 1
+rect = [8, 0, 11, 0]              # right 4/12 (≈ 33%)
+
+[presets.tall-center]
+cols = 4
+rows = 1
+rect = [1, 0, 2, 0]              # middle 2/4 (50%)

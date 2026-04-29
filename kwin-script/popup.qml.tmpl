@@ -1,0 +1,335 @@
+// kridtiler popup — gTile-style mini grid widget. CLI substitutes
+// __PLACEHOLDER__ tokens before loadDeclarativeScript.
+//
+// Architecture: a full-screen transparent PlasmaCore.Dialog covers the active
+// monitor's MaximizeArea, and the popup widget itself is a Rectangle child
+// positioned near the cursor. A click-catcher MouseArea sits behind the
+// widget — clicking *outside* the widget dismisses. This is more reliable
+// than listening for window focus changes, which were flaky on Plasma 6.
+//
+// Behaviour:
+//   * Captures activeWindow + its monitor's MaximizeArea on load.
+//   * First click inside grid = anchor cell; drag (or click corner) = commit.
+//   * Click outside the widget / right-click / Esc = cancel.
+
+import QtQuick
+import QtQuick.Window
+import org.kde.kwin
+import org.kde.plasma.core as PlasmaCore
+
+Item {
+    id: root
+
+    property int cols: __COLS__
+    property int rows: __ROWS__
+    property string reqId: "__REQ_ID__"
+    property string pluginName: "__PLUGIN__"
+    property string anchorMode: "__ANCHOR__"   // "center" | "cursor"
+    property bool   grabFocus: __GRAB_FOCUS__   // false by default → IME-safe
+
+    // Width policy: if pct > 0 use area.width * pct, else fall back to fixed px.
+    readonly property int    popupWidthPx:  __POPUP_WIDTH__
+    readonly property real   popupWidthPct: __POPUP_WIDTH_PCT__
+
+    property var capturedWindow: null
+    property var area: ({ x: 0, y: 0, width: 1, height: 1 })
+
+    property int popupW: 320
+    property int popupH: 200
+    property int popupX: 0
+    property int popupY: 0
+
+    property int anchorCol: -1
+    property int anchorRow: -1
+    property int hoverCol: -1
+    property int hoverRow: -1
+    property bool dragging: false
+    property bool dragMoved: false
+    property bool finished: false
+
+    readonly property bool hasAnchor: anchorCol >= 0
+    readonly property int selMinCol: hasAnchor ? Math.min(anchorCol, hoverCol < 0 ? anchorCol : hoverCol) : -1
+    readonly property int selMinRow: hasAnchor ? Math.min(anchorRow, hoverRow < 0 ? anchorRow : hoverRow) : -1
+    readonly property int selMaxCol: hasAnchor ? Math.max(anchorCol, hoverCol < 0 ? anchorCol : hoverCol) : -1
+    readonly property int selMaxRow: hasAnchor ? Math.max(anchorRow, hoverRow < 0 ? anchorRow : hoverRow) : -1
+
+    function log(s) { console.warn("[kridtiler-popup] " + s); }
+
+    function teardown() {
+        if (root.finished) return;
+        root.finished = true;
+        dialog.visible = false;
+    }
+
+    function commit(c1, r1, c2, r2) {
+        if (!root.capturedWindow) { teardown(); return; }
+        var w = root.capturedWindow;
+        if (w.fullScreen) w.fullScreen = false;
+        try { if (w.tile) w.tile = null; } catch (e) {}
+        var fg0 = w.frameGeometry;
+        var wasMaxLike = (fg0.x === root.area.x && fg0.y === root.area.y &&
+                          fg0.width === root.area.width && fg0.height === root.area.height);
+        if (wasMaxLike) {
+            try { workspace.slotWindowMaximize(); } catch (e) {}
+        }
+        var oldFrame = {
+            x: w.frameGeometry.x, y: w.frameGeometry.y,
+            width: w.frameGeometry.width, height: w.frameGeometry.height
+        };
+        var cellW = root.area.width / root.cols;
+        var cellH = root.area.height / root.rows;
+        var target = {
+            x: Math.round(root.area.x + c1 * cellW),
+            y: Math.round(root.area.y + r1 * cellH),
+            width:  Math.round((c2 - c1 + 1) * cellW),
+            height: Math.round((r2 - r1 + 1) * cellH)
+        };
+        w.frameGeometry = target;
+        // Buffer/cross-monitor damage refresh — see tile.js.tmpl.
+        try {
+            workspace.showOutline(oldFrame);
+            workspace.showOutline(workspace.virtualScreenGeometry);
+            workspace.hideOutline();
+        } catch (e) {}
+        log("commit rect=" + c1 + "," + r1 + ".." + c2 + "," + r2 +
+            " target=" + JSON.stringify(target));
+        teardown();
+    }
+
+    Component.onCompleted: {
+        capturedWindow = Workspace.activeWindow;
+        if (!capturedWindow) { log("no active window"); teardown(); return; }
+        var a = Workspace.clientArea(KWin.MaximizeArea, capturedWindow.output, Workspace.currentDesktop);
+        area = { x: a.x, y: a.y, width: a.width, height: a.height };
+
+        // Compute popup size — pct wins if > 0.
+        var w = root.popupWidthPct > 0
+            ? Math.round(a.width * root.popupWidthPct)
+            : root.popupWidthPx;
+        // Clamp to a sane range relative to screen.
+        w = Math.max(240, Math.min(Math.round(a.width * 0.9), w));
+        var aspect = a.width / a.height;
+        var h = Math.round(w / aspect) + 28;  // +28 for caption strip
+        h = Math.max(180, Math.min(Math.round(a.height * 0.9), h));
+
+        // Position: center on the active monitor (default) or follow cursor.
+        var px, py;
+        if (root.anchorMode === "cursor") {
+            var cur = Workspace.cursorPos;
+            px = Math.round(cur.x - w / 2);
+            py = Math.round(cur.y - h / 2);
+        } else {
+            px = Math.round(a.x + (a.width  - w) / 2);
+            py = Math.round(a.y + (a.height - h) / 2);
+        }
+        px = Math.max(a.x + 8, Math.min(a.x + a.width  - w - 8, px));
+        py = Math.max(a.y + 8, Math.min(a.y + a.height - h - 8, py));
+        root.popupW = w;
+        root.popupH = h;
+        root.popupX = px - a.x;  // relative inside the dialog
+        root.popupY = py - a.y;
+
+        log("target=" + capturedWindow.caption +
+            " anchor=" + root.anchorMode +
+            " grabFocus=" + root.grabFocus +
+            " popup at (" + px + "," + py + ") " + w + "x" + h);
+        dialog.visible = true;
+        if (root.grabFocus) {
+            // Only when explicitly opted in — taking focus disturbs Wayland
+            // text-input-v3 on GTK/Qt apps and breaks fcitx5/IBus commit.
+            dialog.requestActivate();
+            focusSink.forceActiveFocus();
+        }
+    }
+
+    PlasmaCore.Dialog {
+        id: dialog
+        // Cover the whole active monitor's MaximizeArea so we can catch outside clicks.
+        x: root.area.x
+        y: root.area.y
+        width: root.area.width
+        height: root.area.height
+        // WindowDoesNotAcceptFocus is conditionally OR-ed in via a property so we
+        // can keep the QML property declarative; with grabFocus=false the popup
+        // never becomes activeWindow → IME stays attached to the original app.
+        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
+               (root.grabFocus ? 0 : Qt.WindowDoesNotAcceptFocus)
+        backgroundHints: PlasmaCore.Types.NoBackground
+        location: PlasmaCore.Types.Floating
+        visible: false
+        // PopupMenu type avoids KWin's OSD slide animation that caused cross-screen flicker.
+        type: PlasmaCore.Dialog.PopupMenu
+
+        mainItem: Item {
+            id: layer
+            width: root.area.width
+            height: root.area.height
+
+            // Click-outside catcher — the *only* way to dismiss reliably across
+            // KWin window-focus quirks. Anything that lands outside the widget
+            // counts as cancel; clicks inside the widget are handled by gridMouse.
+            MouseArea {
+                id: outside
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onPressed: function(mouse) {
+                    var inX = mouse.x >= root.popupX && mouse.x < root.popupX + root.popupW;
+                    var inY = mouse.y >= root.popupY && mouse.y < root.popupY + root.popupH;
+                    if (!inX || !inY || mouse.button === Qt.RightButton) {
+                        root.teardown();
+                        mouse.accepted = true;
+                    } else {
+                        // Forward to the grid by computing within-widget coords.
+                        // We don't actually forward — gridMouse below will get
+                        // it through the child, since `propagateComposedEvents`
+                        // is false but the grid sits on top.
+                        mouse.accepted = false;
+                    }
+                }
+            }
+
+            // Keyboard sink — covers the whole layer so Esc/Enter work no matter
+            // where the cursor is.
+            Item {
+                id: focusSink
+                anchors.fill: parent
+                focus: true
+                Keys.onPressed: function(event) {
+                    if (event.key === Qt.Key_Escape) {
+                        root.teardown();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        if (root.hasAnchor && root.hoverCol >= 0) {
+                            root.commit(root.selMinCol, root.selMinRow, root.selMaxCol, root.selMaxRow);
+                        } else if (root.hoverCol >= 0) {
+                            root.commit(root.hoverCol, root.hoverRow, root.hoverCol, root.hoverRow);
+                        }
+                        event.accepted = true;
+                    }
+                }
+            }
+
+            // The popup widget itself.
+            Rectangle {
+                id: chrome
+                x: root.popupX
+                y: root.popupY
+                width: root.popupW
+                height: root.popupH
+                color: "__BG_COLOR__"
+                opacity: __BG_OPACITY__
+                radius: 6
+                border.color: "__BORDER_COLOR__"
+                border.width: 1
+
+                // Caption strip — 28px tall at top
+                Rectangle {
+                    id: header
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 28
+                    color: "transparent"
+                    Text {
+                        anchors.centerIn: parent
+                        color: "white"
+                        font.pixelSize: 12
+                        elide: Text.ElideMiddle
+                        width: parent.width - 16
+                        horizontalAlignment: Text.AlignHCenter
+                        text: root.capturedWindow
+                            ? "→ " + root.capturedWindow.caption
+                            : "(no target)"
+                    }
+                }
+
+                // Grid area below header
+                Item {
+                    id: gridArea
+                    anchors.top: header.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 4
+
+                    // Visual cells
+                    Repeater {
+                        model: root.cols * root.rows
+                        delegate: Rectangle {
+                            readonly property int col: index % root.cols
+                            readonly property int row: Math.floor(index / root.cols)
+                            readonly property bool isHover: !root.hasAnchor &&
+                                col === root.hoverCol && row === root.hoverRow
+                            readonly property bool inSel: root.hasAnchor &&
+                                col >= root.selMinCol && col <= root.selMaxCol &&
+                                row >= root.selMinRow && row <= root.selMaxRow
+                            readonly property bool isAnchor: root.hasAnchor &&
+                                col === root.anchorCol && row === root.anchorRow
+
+                            x: Math.round(col * gridArea.width / root.cols)
+                            y: Math.round(row * gridArea.height / root.rows)
+                            width:  Math.round(gridArea.width  / root.cols) - 2
+                            height: Math.round(gridArea.height / root.rows) - 2
+                            radius: 2
+                            color: isAnchor ? "__ANCHOR_COLOR__"
+                                 : inSel    ? "__SEL_COLOR__"
+                                 : isHover  ? "#3a3a4f"
+                                            : "__CELL_COLOR__"
+                            border.color: isHover && !root.hasAnchor ? "__ANCHOR_COLOR__" : "__BORDER_COLOR__"
+                            border.width: isHover && !root.hasAnchor ? 2 : 1
+                        }
+                    }
+
+                    // Single MouseArea over the grid — handles drag-select AND click-click.
+                    MouseArea {
+                        id: gridMouse
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        hoverEnabled: true
+                        cursorShape: Qt.CrossCursor
+
+                        function cellAt(mx, my) {
+                            var c = Math.floor(mx / (gridArea.width  / root.cols));
+                            var r = Math.floor(my / (gridArea.height / root.rows));
+                            c = Math.max(0, Math.min(root.cols - 1, c));
+                            r = Math.max(0, Math.min(root.rows - 1, r));
+                            return { c: c, r: r };
+                        }
+
+                        onPressed: function(mouse) {
+                            if (mouse.button === Qt.RightButton) { root.teardown(); return; }
+                            var p = cellAt(mouse.x, mouse.y);
+                            if (root.hasAnchor && !root.dragging) {
+                                root.commit(
+                                    Math.min(root.anchorCol, p.c), Math.min(root.anchorRow, p.r),
+                                    Math.max(root.anchorCol, p.c), Math.max(root.anchorRow, p.r)
+                                );
+                                return;
+                            }
+                            root.anchorCol = p.c; root.anchorRow = p.r;
+                            root.hoverCol  = p.c; root.hoverRow  = p.r;
+                            root.dragging  = true;
+                            root.dragMoved = false;
+                        }
+
+                        onPositionChanged: function(mouse) {
+                            var p = cellAt(mouse.x, mouse.y);
+                            if (root.dragging && (p.c !== root.hoverCol || p.r !== root.hoverRow)) {
+                                root.dragMoved = true;
+                            }
+                            root.hoverCol = p.c; root.hoverRow = p.r;
+                        }
+
+                        onReleased: function(mouse) {
+                            if (!root.dragging) return;
+                            root.dragging = false;
+                            if (root.dragMoved) {
+                                root.commit(root.selMinCol, root.selMinRow, root.selMaxCol, root.selMaxRow);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

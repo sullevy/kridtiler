@@ -1,0 +1,17 @@
+/target
+*.swp
+.kate-swp
+.*.kate-swp
+/tmp_scripts
+
+# 发布产物（不入库）
+*.zip
+*.kwinscript
+/release-可用版本/
+
+# 本地文档
+PRD.txt
+KWin scripting API*.md
+
+.DS_Store
+*.bak

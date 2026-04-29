@@ -1,0 +1,249 @@
+// kridtiler interactive overlay — declarative QML script.
+// CLI substitutes __PLACEHOLDER__ tokens before loadDeclarativeScript.
+//
+// Behaviour (mouse-only, IME-safe):
+//   * Captures activeWindow + its monitor's MaximizeArea on load.
+//   * Shows a grid sized to that area (panel-aware via clientArea(MaximizeArea)).
+//   * Left-drag selects a rect, release commits.
+//   * Right-click cancels.
+//   * Does NOT grab keyboard focus — protects fcitx5/IBus text-input on
+//     GTK/Qt apps, at the cost of no Esc/Enter/arrow keys. KWin's only
+//     mechanism that wouldn't break IME is registerShortcut, which grabs
+//     keys globally even after the overlay hides — worse trade-off.
+
+import QtQuick
+import QtQuick.Window
+import org.kde.kwin
+import org.kde.plasma.core as PlasmaCore
+
+Item {
+    id: root
+
+    property int cols: __COLS__
+    property int rows: __ROWS__
+    property string reqId: "__REQ_ID__"
+    property string pluginName: "__PLUGIN__"
+    property string resultPath: "__RESULT_PATH__"
+
+    property var capturedWindow: null
+    property var area: ({ x: 0, y: 0, width: 1, height: 1 })
+
+    // Selection state — -1 means nothing selected yet.
+    property int selA_col: -1
+    property int selA_row: -1
+    property int selB_col: -1
+    property int selB_row: -1
+    property bool dragging: false
+    property bool finished: false
+
+    readonly property int selMinCol: Math.min(selA_col, selB_col)
+    readonly property int selMinRow: Math.min(selA_row, selB_row)
+    readonly property int selMaxCol: Math.max(selA_col, selB_col)
+    readonly property int selMaxRow: Math.max(selA_row, selB_row)
+    readonly property bool hasSelection: selA_col >= 0 && selB_col >= 0
+
+    function log(s) { console.warn("[kridtiler-overlay] " + s); }
+
+    function report(status, payload) {
+        // Declarative QML scripts in KWin can't talk D-Bus and Qt blocks
+        // XHR file writes by default, so the only feedback channel is the
+        // visual one (the window actually moved) plus journal logs.
+        log("done status=" + status + " payload=" + JSON.stringify(payload || {}));
+    }
+
+    function teardown() {
+        if (root.finished) return;
+        root.finished = true;
+        dialog.visible = false;
+        // CLI sees TileResult and is responsible for calling unloadScript.
+        // We don't try to unload ourselves — there's no clean way for a
+        // declarative script to remove itself from KWin's loaded list.
+    }
+
+    function cellRect(c1, r1, c2, r2) {
+        var cellW = root.area.width / root.cols;
+        var cellH = root.area.height / root.rows;
+        return {
+            x: Math.round(root.area.x + c1 * cellW),
+            y: Math.round(root.area.y + r1 * cellH),
+            width: Math.round((c2 - c1 + 1) * cellW),
+            height: Math.round((r2 - r1 + 1) * cellH)
+        };
+    }
+
+    function commit() {
+        if (!hasSelection || !root.capturedWindow) {
+            report("cancelled", { reason: "no_selection" });
+            teardown();
+            return;
+        }
+        var w = root.capturedWindow;
+        if (w.fullScreen) w.fullScreen = false;
+        try { if (w.tile) w.tile = null; } catch (e) {}
+        var fg0 = w.frameGeometry;
+        var wasMaxLike = (fg0.x === root.area.x && fg0.y === root.area.y &&
+                          fg0.width === root.area.width && fg0.height === root.area.height);
+        if (wasMaxLike) {
+            try { workspace.slotWindowMaximize(); } catch (e) {}
+        }
+        var oldFrame = {
+            x: w.frameGeometry.x, y: w.frameGeometry.y,
+            width: w.frameGeometry.width, height: w.frameGeometry.height
+        };
+        var target = cellRect(selMinCol, selMinRow, selMaxCol, selMaxRow);
+        w.frameGeometry = target;
+        // Buffer/cross-monitor damage refresh — see tile.js.tmpl.
+        try {
+            workspace.showOutline(oldFrame);
+            workspace.showOutline(workspace.virtualScreenGeometry);
+            workspace.hideOutline();
+        } catch (e) {}
+        var after = w.frameGeometry;
+        var rejected = (after.x !== target.x || after.y !== target.y ||
+                        after.width !== target.width || after.height !== target.height);
+        report(rejected ? "partial" : "ok", {
+            target: target,
+            after: { x: after.x, y: after.y, width: after.width, height: after.height },
+            area: root.area,
+            output: w.output ? w.output.name : null,
+            grid: { cols: root.cols, rows: root.rows },
+            rect: [selMinCol, selMinRow, selMaxCol, selMaxRow],
+            caption: w.caption,
+            resourceClass: w.resourceClass,
+            rejected: rejected
+        });
+        teardown();
+    }
+
+    function cancel(reason) {
+        report("cancelled", { reason: reason });
+        teardown();
+    }
+
+    Component.onCompleted: {
+        capturedWindow = Workspace.activeWindow;
+        if (!capturedWindow) {
+            log("no active window — aborting");
+            cancel("no_active_window");
+            return;
+        }
+        var a = Workspace.clientArea(KWin.MaximizeArea, capturedWindow.output, Workspace.currentDesktop);
+        area = { x: a.x, y: a.y, width: a.width, height: a.height };
+        log("target=" + capturedWindow.caption + " area=" + a.x + "," + a.y + " " + a.width + "x" + a.height);
+        dialog.visible = true;
+        // Intentionally NOT calling dialog.requestActivate() / forceActiveFocus():
+        // taking focus breaks Wayland text-input-v3 reattach for GTK/Qt apps.
+    }
+
+    PlasmaCore.Dialog {
+        id: dialog
+        x: root.area.x
+        y: root.area.y
+        width: root.area.width
+        height: root.area.height
+        // WindowDoesNotAcceptFocus: never become activeWindow → Wayland
+        // text-input on the captured window stays attached → fcitx5/IBus
+        // commit works after dismiss.
+        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+        backgroundHints: PlasmaCore.Types.NoBackground
+        location: PlasmaCore.Types.Floating
+        visible: false
+        // PopupMenu type avoids the OSD slide-in/out animation that was causing
+        // cross-screen flicker when the overlay dismissed.
+        type: PlasmaCore.Dialog.PopupMenu
+
+        mainItem: Rectangle {
+            id: chrome
+            width: root.area.width
+            height: root.area.height
+            color: "__BG_COLOR__"
+            opacity: __BG_OPACITY__
+            radius: 4
+
+            // Grid lines
+            Repeater {
+                model: root.cols + 1
+                delegate: Rectangle {
+                    color: "__BORDER_COLOR__"
+                    width: 1
+                    height: chrome.height
+                    x: Math.round(index * chrome.width / root.cols)
+                    y: 0
+                }
+            }
+            Repeater {
+                model: root.rows + 1
+                delegate: Rectangle {
+                    color: "__BORDER_COLOR__"
+                    width: chrome.width
+                    height: 1
+                    x: 0
+                    y: Math.round(index * chrome.height / root.rows)
+                }
+            }
+
+            // Selection highlight
+            Rectangle {
+                visible: root.hasSelection
+                color: "__ANCHOR_COLOR__"
+                opacity: 0.35
+                border.color: "__ANCHOR_COLOR__"
+                border.width: 2
+                x: Math.round(root.selMinCol * chrome.width / root.cols)
+                y: Math.round(root.selMinRow * chrome.height / root.rows)
+                width:  Math.round((root.selMaxCol - root.selMinCol + 1) * chrome.width / root.cols)
+                height: Math.round((root.selMaxRow - root.selMinRow + 1) * chrome.height / root.rows)
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                hoverEnabled: false
+                cursorShape: Qt.CrossCursor
+                onPressed: function(mouse) {
+                    if (mouse.button === Qt.RightButton) { root.cancel("right_click"); return; }
+                    var c = Math.floor(mouse.x / (chrome.width / root.cols));
+                    var r = Math.floor(mouse.y / (chrome.height / root.rows));
+                    c = Math.max(0, Math.min(root.cols - 1, c));
+                    r = Math.max(0, Math.min(root.rows - 1, r));
+                    root.selA_col = c; root.selA_row = r;
+                    root.selB_col = c; root.selB_row = r;
+                    root.dragging = true;
+                }
+                onPositionChanged: function(mouse) {
+                    if (!root.dragging) return;
+                    var c = Math.floor(mouse.x / (chrome.width / root.cols));
+                    var r = Math.floor(mouse.y / (chrome.height / root.rows));
+                    root.selB_col = Math.max(0, Math.min(root.cols - 1, c));
+                    root.selB_row = Math.max(0, Math.min(root.rows - 1, r));
+                }
+                onReleased: function(mouse) {
+                    if (!root.dragging) return;
+                    root.dragging = false;
+                    if (mouse.button === Qt.LeftButton) root.commit();
+                }
+            }
+
+            // Target caption — bottom center
+            Rectangle {
+                anchors.bottom: parent.bottom
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottomMargin: 24
+                color: "#000000"
+                opacity: 0.6
+                radius: 6
+                width: caption.implicitWidth + 24
+                height: caption.implicitHeight + 12
+                Text {
+                    id: caption
+                    anchors.centerIn: parent
+                    color: "white"
+                    font.pixelSize: 16
+                    text: root.capturedWindow
+                        ? "Target: " + root.capturedWindow.caption
+                        : "Target: (none)"
+                }
+            }
+        }
+    }
+}

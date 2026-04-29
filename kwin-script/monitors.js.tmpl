@@ -1,0 +1,34 @@
+// kridtiler enumerate monitors. CLI substitutes __REQ_ID__ before loadScript.
+// Reports a JSON array via callDBus(TileResult).
+
+(function () {
+    const REQ_ID = "__REQ_ID__";
+    const screens = workspace.screens || [];
+    const active = workspace.activeScreen;
+    const out = [];
+    for (let i = 0; i < screens.length; i++) {
+        const s = screens[i];
+        const g = s.geometry;
+        out.push({
+            index: i,
+            name: s.name || ("screen" + i),
+            manufacturer: s.manufacturer || "",
+            model: s.model || "",
+            serial: s.serialNumber || "",
+            geometry: { x: g.x, y: g.y, width: g.width, height: g.height },
+            scale: s.devicePixelRatio || 1,
+            active: (active && s.name === active.name)
+        });
+    }
+    try {
+        callDBus(
+            "org.kridtile.Control",
+            "/org/kridtile/Control",
+            "org.kridtile.Control",
+            "TileResult",
+            REQ_ID,
+            "ok",
+            JSON.stringify({ monitors: out })
+        );
+    } catch (e) { print("[kridtiler-monitors] callDBus error: " + e); }
+})();
