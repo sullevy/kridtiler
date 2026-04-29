@@ -2,6 +2,14 @@
 
 KDE Plasma 6 / Wayland 窗口平铺 CLI。基于 KWin Scripting D-Bus 接口,无需常驻守护进程,单次调用端到端 14–22 ms。
 
+## 演示
+
+https://github.com/sullevy/kridtiler/raw/main/screenshot.webm
+
+<video src="https://github.com/sullevy/kridtiler/raw/main/screenshot.webm" controls width="720" muted></video>
+
+> 如视频未自动播放,点上方链接直接观看。
+
 ## 工作原理
 
 ```
